@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Natural Charm Physics</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0b0b;color:#f8f4ee;font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif}
+main{max-width:700px;margin:auto;padding:18px}
+h1{font-size:27px;letter-spacing:-1px}
+h1 span{color:#ff851b}
+p{color:#999;font-size:13px}
+canvas{display:block;width:100%;height:460px;border:1px solid #493622;border-radius:16px;background:radial-gradient(ellipse at 50% 35%,#302319,#100f0e 75%);touch-action:none}
+.controls{margin:18px 0}
+label{font-size:13px;color:#ddd}
+input[type=range]{display:block;width:100%;margin-top:12px;accent-color:#ff851b}
+output{float:right;color:#ffad63}
+button{padding:12px 16px;border-radius:12px;border:1px solid #493622;background:#1a1714;color:white;cursor:pointer}
+button.primary,.upload-button{background:#ff851b;color:#16100a;border:0;font-weight:700}
+.charm-options,.custom-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.charm-options button,.custom-card{background:#191715;color:white;border:1px solid #493622;border-radius:12px;min-width:0}
+.charm-options button{padding:12px 4px;font-size:25px}
+.charm-options small,.custom-card small{display:block;font-size:10px;margin-top:7px}
+.custom-card{padding:7px 4px;text-align:center;overflow:hidden}
+.custom-card.selected{border:2px solid #ff851b}
+.custom-card img{width:100%;height:78px;object-fit:contain}
+.custom-card .empty{height:78px;display:grid;place-items:center;font-size:25px;color:#876b4c}
+.custom-card button{display:block;width:100%;padding:7px 2px;margin-top:6px;font-size:11px}
+.custom-card .delete{background:#351b17;border-color:#63352b}
+.upload-button{display:inline-block;border-radius:12px;padding:12px 16px;font-size:13px;cursor:pointer}
+#photo{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.status{color:#bca17e;font-size:12px}
+.note{line-height:1.5}
+</style>
+</head>
+<body>
+<main>
+<h1>Natural Charm<span>.</span></h1>
+<p>3D material effect · Natural rope physics · Touch interaction</p>
+
+<canvas id="scene"></canvas>
+
+<section>
+<h3>Change Your Charm</h3>
+<div class="charm-options">
+<button type="button" onclick="changeCharm('🧿')">🧿<small>Lucky Eye</small></button>
+<button type="button" onclick="changeCharm('🍋')">🍋<small>Lemon</small></button>
+<button type="button" onclick="changeCharm('🌙')">🌙<small>Moon</small></button>
+<button type="button" onclick="changeCharm('💎')">💎<small>Crystal</small></button>
+<button type="button" onclick="changeCharm('🌼')">🌼<small>Flower</small></button>
+<button type="button" onclick="changeCharm('⭐')">⭐<small>Star</small></button>
+<button type="button" onclick="changeCharm('🧸')">🧸<small>Teddy</small></button>
+<button type="button" onclick="changeCharm('👑')">👑<small>Crown</small></button>
+</div>
+</section>
+
+<section>
+<h3>My Custom Charms (<span id="count">0</span>/8)</h3>
+<p class="note">Your custom charms and settings stay saved in this browser.</p>
+<label class="upload-button" for="photo">+ Add Custom Charm</label>
+<input id="photo" type="file" accept="image/*">
+<div id="customGrid" class="custom-grid"></div>
+</section>
+
+<div class="controls">
+<label>Rope length <output id="lengthOut">220</output></label>
+<input id="length" type="range" min="100" max="340" value="220">
+</div>
+<div class="controls">
+<label>Charm size <output id="sizeOut">76</output></label>
+<input id="size" type="range" min="40" max="130" value="76">
+</div>
+<div class="controls">
+<label>Rope flexibility <output id="flexOut">70%</output></label>
+<input id="flex" type="range" min="20" max="100" value="70">
+</div>
+
+<div class="row">
+<button class="primary" id="swing" type="button">Give it a swing</button>
+<button id="reset" type="button">Reset</button>
+</div>
+<p class="status" id="status">Touch the charm and drag it.</p>
+</main>
+
+<script>
+(() => {
+"use strict";
+
+const $=id=>document.getElementById(id);
+const canvas=$("scene");
+const ctx=canvas.getContext("2d");
+
+const KEYS={
+  gallery:"hangly_custom_charms_v1",
+  selected:"hangly_selected_charm_v1",
+  settings:"hangly_settings_v1"
+};
+
+const defaults=["🧿","🍋","🌙","💎","🌼","⭐","🧸","👑"];
+const SEGMENTS=24;
+
+let W=0,H=0,D=1;
+let ropeLength=220,charmSize=76,flexibility=.70;
+let selectedCharm="🧿",activeCustomId=null,image=null;
+let customCharms=[],points=[];
+let dragging=false,pointerId=null;
+let dragX=0,dragY=0,offsetX=0,offsetY=0;
+let swingBoost=0,lastFrame=0;
+
+function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
+function status(s){$("status").textContent=s}
+
+function read(key,fallback){
+  try{
+    const v=localStorage.getItem(key);
+    return v===null?fallback:JSON.parse(v);
+  }catch(e){return fallback}
+}
+
+function write(key,value){
+  try{
+    localStorage.setItem(key,JSON.stringify(value));
+    return true;
+  }catch(e){
+    status("Storage full. Use a smaller image or delete a charm.");
+    return false;
+  }
+}
+
+function saveSettings(){
+  write(KEYS.settings,{
+    ropeLength,
+    charmSize,
+    flexibility:Math.round(flexibility*100)
+  });
+}
+
+function saveSelection(){
+  write(KEYS.selected,activeCustomId
+    ?{type:"custom",id:activeCustomId}
+    :{type:"default",emoji:selectedCharm});
+}
+
+function saveGallery(){return write(KEYS.gallery,customCharms)}
+
+function updateOutputs(){
+  $("lengthOut").textContent=ropeLength;
+  $("sizeOut").textContent=charmSize;
+  $("flexOut").textContent=Math.round(flexibility*100)+"%";
+}
+
+function loadSettings(){
+  const s=read(KEYS.settings,{});
+  ropeLength=clamp(Number(s.ropeLength)||220,100,340);
+  charmSize=clamp(Number(s.charmSize)||76,40,130);
+  flexibility=clamp(Number(s.flexibility)||70,20,100)/100;
+
+  $("length").value=ropeLength;
+  $("size").value=charmSize;
+  $("flex").value=Math.round(flexibility*100);
+  updateOutputs();
+}
+
+function loadGallery(){
+  const saved=read(KEYS.gallery,[]);
+  customCharms=Array.isArray(saved)
+    ?saved.filter(c=>c&&typeof c.id==="string"&&typeof c.src==="string").slice(0,8)
+    :[];
+
+  const selected=read(KEYS.selected,null);
+
+  if(selected&&selected.type==="custom"){
+    const item=customCharms.find(c=>c.id===selected.id);
+    if(item){selectCustom(item,true);return}
+  }
+
+  if(selected&&selected.type==="default"&&defaults.includes(selected.emoji)){
+    selectedCharm=selected.emoji;
+  }
+  renderGallery();
+}
+
+function changeCharm(emoji){
+  selectedCharm=emoji;
+  activeCustomId=null;
+  image=null;
+  saveSelection();
+  renderGallery();
+  status("Charm selected and saved.");
+}
+window.changeCharm=changeCharm;
+
+function selectCustom(item,quiet=false){
+  const img=new Image();
+  img.onload=()=>{
+    image=img;
+    activeCustomId=item.id;
+    selectedCharm="";
+    saveSelection();
+    renderGallery();
+    if(!quiet)status("Custom charm selected and saved.");
+  };
+  img.onerror=()=>status("Unable to load this image.");
+  img.src=item.src;
+}
+
+function renderGallery(){
+  const grid=$("customGrid");
+  grid.replaceChildren();
+  $("count").textContent=customCharms.length;
+
+  customCharms.forEach(item=>{
+    const card=document.createElement("div");
+    card.className="custom-card"+(activeCustomId===item.id?" selected":"");
+
+    const img=document.createElement("img");
+    img.src=item.src;
+    img.alt=item.name;
+    card.appendChild(img);
+
+    const name=document.createElement("small");
+    name.textContent=item.name;
+    card.appendChild(name);
+
+    const use=document.createElement("button");
+    use.type="button";
+    use.textContent=activeCustomId===item.id?"Selected":"Use Charm";
+    use.addEventListener("click",()=>selectCustom(item));
+    card.appendChild(use);
+
+    const del=document.createElement("button");
+    del.type="button";
+    del.className="delete";
+    del.textContent="Delete";
+    del.addEventListener("click",()=>{
+      const old=[...customCharms];
+      customCharms=customCharms.filter(c=>c.id!==item.id);
+
+      if(!saveGallery()){
+        customCharms=old;
+        renderGallery();
+        return;
+      }
+
+      if(activeCustomId===item.id){
+        activeCustomId=null;
+        selectedCharm="🧿";
+        image=null;
+        saveSelection();
+      }
+
+      renderGallery();
+      status("Custom charm deleted.");
+    });
+    card.appendChild(del);
+    grid.appendChild(card);
+  });
+
+  for(let i=customCharms.length;i<8;i++){
+    const card=document.createElement("div");
+    card.className="custom-card";
+    const empty=document.createElement("div");
+    empty.className="empty";
+    empty.textContent="+";
+    card.appendChild(empty);
+    const label=document.createElement("small");
+    label.textContent="Empty slot";
+    card.appendChild(label);
+    grid.appendChild(card);
+  }
+}
+
+function setupRope(){
+  const segment=ropeLength/SEGMENTS;
+  points=[];
+
+  for(let i=0;i<=SEGMENTS;i++){
+    const x=W/2,y=16+segment*i;
+    points.push({x,y,px:x,py:y});
+  }
+}
+
+function resize(){
+  const rect=canvas.getBoundingClientRect();
+  W=rect.width;
+  H=rect.height;
+  D=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(W*D);
+  canvas.height=Math.round(H*D);
+  ctx.setTransform(D,0,0,D,0,0);
+  setupRope();
+}
+
+function simulate(dt){
+  if(points.length!==SEGMENTS+1)return;
+
+  const segment=ropeLength/SEGMENTS;
+  const step=Math.min(dt,.025);
+  const top=points[0];
+  top.x=W/2;
+  top.y=16;
+
+  for(let i=1;i<=SEGMENTS;i++){
+    const p=points[i];
+    if(dragging&&i===SEGMENTS)continue;
+
+    const vx=(p.x-p.px)*.994;
+    const vy=(p.y-p.py)*.994;
+    p.px=p.x;
+    p.py=p.y;
+    p.x+=vx;
+    p.y+=vy+850*step*step;
+  }
+
+  if(swingBoost!==0&&!dragging){
+    points[SEGMENTS].px-=swingBoost;
+    swingBoost*=.97;
+    if(Math.abs(swingBoost)<.1)swingBoost=0;
+  }
+
+  for(let k=0;k<Math.round(5+flexibility*6);k++){
+    top.x=W/2;
+    top.y=16;
+
+    for(let i=0;i<SEGMENTS;i++){
+      const a=points[i],b=points[i+1];
+      const dx=b.x-a.x,dy=b.y-a.y;
+      const dist=Math.hypot(dx,dy)||.001;
+      const diff=(dist-segment)/dist;
+
+      if(i===0){
+        b.x-=dx*diff;
+        b.y-=dy*diff;
+      }else{
+        a.x+=dx*diff*.5;
+        a.y+=dy*diff*.5;
+        if(!(dragging&&i+1===SEGMENTS)){
+          b.x-=dx*diff*.5;
+          b.y-=dy*diff*.5;
+        }
+      }
+    }
+
+    if(dragging){
+      points[SEGMENTS].x=dragX;
+      points[SEGMENTS].y=dragY;
+    }
+  }
+}
+
+function drawRope(){
+  if(points.length<2)return;
+  ctx.save();
+  ctx.lineCap="round";
+  ctx.lineJoin="round";
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x+1,points[0].y+2);
+  for(let i=1;i<points.length;i++){
+    ctx.lineTo(points[i].x+1,points[i].y+2);
+  }
+  ctx.strokeStyle="rgba(0,0,0,.5)";
+  ctx.lineWidth=4;
+  ctx.stroke();
+
+  const end=points[SEGMENTS];
+  const gradient=ctx.createLinearGradient(
+    points[0].x,points[0].y,end.x,end.y
+  );
+  gradient.addColorStop(0,"#f1d19a");
+  gradient.addColorStop(.45,"#bd8b48");
+  gradient.addColorStop(1,"#f6d8a0");
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x,points[0].y);
+  for(let i=1;i<points.length;i++){
+    ctx.lineTo(points[i].x,points[i].y);
+  }
+  ctx.strokeStyle=gradient;
+  ctx.lineWidth=2.8;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* Preserve the original charm colours while adding subtle depth. */
+function drawMetalDepth(source,size,isEmoji){
+  const scale=2;
+  const side=Math.ceil(size*1.6);
+  const off=document.createElement("canvas");
+  off.width=side*scale;
+  off.height=side*scale;
+  const c=off.getContext("2d");
+
+  c.scale(scale,scale);
+
+  if(isEmoji){
+    c.font=`${size}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`;
+    c.textAlign="center";
+    c.textBaseline="middle";
+    c.fillText(source,side/2,side/2);
+  }else{
+    const img=source;
+    const ratio=Math.min(size/img.naturalWidth,size/img.naturalHeight);
+    const w=img.naturalWidth*ratio;
+    const h=img.naturalHeight*ratio;
+    c.drawImage(img,(side-w)/2,(side-h)/2,w,h);
+  }
+
+  ctx.save();
+  for(let i=4;i>=1;i--){
+    ctx.globalAlpha=.13;
+    ctx.drawImage(off,-side/2+i*.65,-side/2+i*.65,side,side);
+  }
+  ctx.globalAlpha=1;
+  ctx.drawImage(off,-side/2,-side/2,side,side);
+
+  ctx.globalCompositeOperation="source-atop";
+  const shine=ctx.createLinearGradient(-size*.4,-size*.5,size*.4,size*.5);
+  shine.addColorStop(0,"rgba(255,255,255,.24)");
+  shine.addColorStop(.22,"rgba(255,255,255,0)");
+  shine.addColorStop(.7,"rgba(0,0,0,.09)");
+  shine.addColorStop(1,"rgba(255,255,255,.12)");
+  ctx.fillStyle=shine;
+  ctx.fillRect(-side/2,-side/2,side,side);
+  ctx.restore();
+}
+
+function drawCharm(){
+  if(points.length!==SEGMENTS+1)return;
+  const p=points[SEGMENTS];
+  ctx.save();
+  ctx.translate(p.x,p.y);
+  if(image&&image.complete&&image.naturalWidth>0){
+    drawMetalDepth(image,charmSize,false);
+  }else{
+    drawMetalDepth(selectedCharm,charmSize,true);
+  }
+  ctx.restore();
+}
+
+function animate(now){
+  const dt=lastFrame?Math.min((now-lastFrame)/1000,.025):.016;
+  lastFrame=now;
+  ctx.setTransform(D,0,0,D,0,0);
+  ctx.clearRect(0,0,W,H);
+  simulate(dt);
+  drawRope();
+  drawCharm();
+  requestAnimationFrame(animate);
+}
+
+function pointerPos(e){
+  const r=canvas.getBoundingClientRect();
+  return{x:e.clientX-r.left,y:e.clientY-r.top};
+}
+
+canvas.addEventListener("pointerdown",e=>{
+  const pos=pointerPos(e);
+  const p=points[SEGMENTS];
+  if(Math.hypot(pos.x-p.x,pos.y-p.y)<Math.max(charmSize*.7,38)){
+    dragging=true;
+    pointerId=e.pointerId;
+    dragX=p.x;
+    dragY=p.y;
+    offsetX=p.x-pos.x;
+    offsetY=p.y-pos.y;
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+});
+
+canvas.addEventListener("pointermove",e=>{
+  if(!dragging||e.pointerId!==pointerId)return;
+  const pos=pointerPos(e);
+  dragX=pos.x+offsetX;
+  dragY=pos.y+offsetY;
+});
+
+function release(e){
+  if(e&&e.pointerId!==pointerId)return;
+  dragging=false;
+  pointerId=null;
+}
+canvas.addEventListener("pointerup",release);
+canvas.addEventListener("pointercancel",release);
+
+$("length").addEventListener("input",e=>{
+  ropeLength=Number(e.target.value);
+  updateOutputs();
+  saveSettings();
+  setupRope();
+});
+
+$("size").addEventListener("input",e=>{
+  charmSize=Number(e.target.value);
+  updateOutputs();
+  saveSettings();
+});
+
+$("flex").addEventListener("input",e=>{
+  flexibility=Number(e.target.value)/100;
+  updateOutputs();
+  saveSettings();
+});
+
+$("swing").addEventListener("click",()=>{
+  points[SEGMENTS].px=points[SEGMENTS].x-45;
+  swingBoost=2;
+  status("Swinging!");
+});
+
+$("reset").addEventListener("click",()=>{
+  dragging=false;
+  pointerId=null;
+  swingBoost=0;
+  setupRope();
+  status("Reset complete.");
+});
+
+$("photo").addEventListener("change",e=>{
+  const file=e.target.files&&e.target.files[0];
+  e.target.value="";
+  if(!file)return;
+  if(!file.type.startsWith("image/")){
+    status("Please select an image.");
+    return;
+  }
+  if(file.size>5*1024*1024){
+    status("Please choose an image smaller than 5 MB.");
+    return;
+  }
+  if(customCharms.length>=8){
+    status("All 8 custom slots are full. Delete one first.");
+    return;
+  }
+
+  const reader=new FileReader();
+  reader.onerror=()=>status("Could not read the image.");
+  reader.onload=()=>{
+    const img=new Image();
+    img.onerror=()=>status("Could not open this image.");
+    img.onload=()=>{
+      const max=400;
+      const scale=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+      const w=Math.max(1,Math.round(img.naturalWidth*scale));
+      const h=Math.max(1,Math.round(img.naturalHeight*scale));
+      const temp=document.createElement("canvas");
+      temp.width=w;
+      temp.height=h;
+      const tc=temp.getContext("2d");
+      tc.clearRect(0,0,w,h);
+      tc.drawImage(img,0,0,w,h);
+
+      const src=file.type==="image/png"
+        ?temp.toDataURL("image/png")
+        :temp.toDataURL("image/jpeg",.85);
+
+      const item={
+        id:"charm_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+        name:file.name.replace(/\.[^.]+$/,"").slice(0,30)||"Custom Charm",
+        src
+      };
+
+      const old=[...customCharms];
+      customCharms.push(item);
+      if(!saveGallery()){
+        customCharms=old;
+        renderGallery();
+        return;
+      }
+      renderGallery();
+      selectCustom(item);
+      status("Custom charm saved.");
+    };
+    img.src=reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+loadSettings();
+loadGallery();
+updateOutputs();
+
+if("ResizeObserver" in window){
+  new ResizeObserver(resize).observe(canvas);
+}else{
+  window.addEventListener("resize",resize);
+}
+
+resize();
+requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
